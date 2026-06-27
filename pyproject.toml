@@ -1,0 +1,12 @@
+[project]
+name = "dpo-qwen"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate>=1.14.0",
+    "datasets>=5.0.0",
+    "torch>=2.12.1",
+    "transformers>=5.12.1",
+    "trl>=1.7.0",
+]
