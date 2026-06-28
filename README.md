@@ -8,9 +8,9 @@ SF Phase build — rep 1. Part of a portfolio building toward RL / post-training
 ## Status
 
 - Environment + model forward pass
-- Load preference dataset
-- DPO training loop
-- Verify the policy learns the preference signal
+- [] Load preference dataset
+- [] DPO training loop
+- [] Verify the policy learns the preference signal
 
 ## Stack
 

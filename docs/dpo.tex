@@ -1,0 +1,131 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb}
+\usepackage[margin=1in]{geometry}
+
+\newcommand{\pit}{\pi_\theta}
+\newcommand{\piref}{\pi_{\text{ref}}}
+\newcommand{\given}{\,\vert\,}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\KL}{\mathrm{KL}}
+
+\title{Direct Preference Optimization --- Derivation}
+\author{Eshan Kemp}
+\date{SF Phase, rep 1}
+
+\begin{document}
+\maketitle
+
+%======================================================
+\section{The RLHF objective and its optimal policy}
+%======================================================
+
+The constrained RLHF objective: maximize reward, penalize divergence
+from the reference policy.
+\begin{equation}
+  \max_{\pit}\ \E_{x,\, y \sim \pit(\cdot \given x)}
+  \big[ r(x,y) \big]
+  \;-\; \beta\, \KL\!\big( \pit(y \given x) \,\|\, \piref(y \given x) \big)
+  \label{eq:objective}
+\end{equation}
+
+\paragraph{Goal.} Show the optimal policy is Boltzmann over the reference:
+\begin{equation}
+  \pi^*(y \given x) \;=\; \frac{1}{Z(x)}\,
+  \piref(y \given x)\, \exp\!\Big( \tfrac{1}{\beta}\, r(x,y) \Big),
+  \qquad
+  Z(x) = \sum_{y} \piref(y \given x)\, \exp\!\Big( \tfrac{1}{\beta}\, r(x,y) \Big).
+  \label{eq:optimal}
+\end{equation}
+
+\paragraph{Derivation.} % expand the KL, rewrite the objective as a single
+% expectation, recognize it as a negative KL to an (unnormalized) target,
+% conclude the optimum.
+
+% --- your work here ---
+
+\bigskip
+\noindent\textbf{Physics bridge.} % r = negative energy, beta = temperature,
+% piref = density of states / prior, Z(x) = partition function.
+% Note the beta -> 0 (greedy / zero-temperature) and beta -> infty
+% (reverts to reference) limits and what they mean for the policy.
+
+% --- your note here ---
+
+%======================================================
+\section{Solving for the implicit reward}
+%======================================================
+
+Invert \eqref{eq:optimal} to express the reward in terms of the policies
+and the (intractable) partition function:
+\begin{equation}
+  r(x,y) \;=\;
+  \beta \log \frac{\pi^*(y \given x)}{\piref(y \given x)}
+  \;+\; \beta \log Z(x).
+  \label{eq:reward}
+\end{equation}
+
+% --- show the inversion ---
+
+%======================================================
+\section{The partition function cancels (the trick)}
+%======================================================
+
+Bradley--Terry preference model over a chosen/rejected pair
+$(y_c, y_r)$ at a \emph{shared} prompt $x$:
+\begin{equation}
+  P(y_c \succ y_r \given x)
+  = \sigma\!\big( r(x, y_c) - r(x, y_r) \big),
+  \qquad \sigma(z) = \frac{1}{1+e^{-z}}.
+  \label{eq:bt}
+\end{equation}
+
+\paragraph{Claim.} Substituting \eqref{eq:reward} into the reward
+\emph{difference} $r(x,y_c) - r(x,y_r)$, the $\beta \log Z(x)$ terms cancel.
+
+% --- show the cancellation. Same x => same Z(x) => gone.
+% Physics: Z never survives a ratio of Boltzmann factors at one temperature. ---
+
+\begin{equation}
+  r(x,y_c) - r(x,y_r)
+  = \beta \log \frac{\pi^*(y_c \given x)}{\piref(y_c \given x)}
+  - \beta \log \frac{\pi^*(y_r \given x)}{\piref(y_r \given x)}.
+  \label{eq:rewarddiff}
+\end{equation}
+
+%======================================================
+\section{The DPO loss}
+%======================================================
+
+Replace $\pi^*$ with the trainable $\pit$, take the negative log-likelihood
+of the Bradley--Terry model over the preference dataset:
+\begin{equation}
+  \mathcal{L}_{\text{DPO}}(\theta)
+  = -\,\E_{(x, y_c, y_r)}
+  \left[
+    \log \sigma\!\left(
+      \beta \log \frac{\pit(y_c \given x)}{\piref(y_c \given x)}
+      - \beta \log \frac{\pit(y_r \given x)}{\piref(y_r \given x)}
+    \right)
+  \right].
+  \label{eq:dpoloss}
+\end{equation}
+
+% --- connect each of the four log-terms to a get_logprobs() call in code ---
+
+%======================================================
+\section{Implementation bridge: response log-probability}
+%======================================================
+
+A response log-probability is a sum of per-token log-probs under
+teacher forcing --- over \emph{response} tokens only, never the prompt:
+\begin{equation}
+  \log \pi(y \given x)
+  = \sum_{t=1}^{|y|} \log \pi\big( y_t \given x, y_{<t} \big).
+  \label{eq:logprob}
+\end{equation}
+
+% --- mark explicitly: t indexes response tokens; prompt tokens are
+% conditioning context, excluded from the sum. THIS is the equation the
+% prompt-masking in get_logprobs() enforces. ---
+
+\end{document}

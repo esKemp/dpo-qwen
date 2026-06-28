@@ -1,0 +1,252 @@
+\documentclass[11pt]{article}
+
+% ---------- packages ----------
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mathtools}
+\usepackage{empheq}
+\usepackage{bm}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+
+% ---------- notation shortcuts ----------
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\KL}{\mathrm{KL}}
+\newcommand{\D}{\mathcal{D}}
+\newcommand{\given}{\,\vert\,}
+\newcommand{\pol}{\pi_{\theta}}          % policy being trained
+\newcommand{\piref}{\pi_{\mathrm{ref}}}  % frozen reference policy
+\newcommand{\polstar}{\pi^{\star}}       % optimal policy
+\newcommand{\yw}{y_w}                     % chosen / winning response
+\newcommand{\yl}{y_l}                     % rejected / losing response
+\DeclareMathOperator{\sigmoid}{\sigma}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+
+\title{Direct Preference Optimization: Derivation Notes}
+\author{dpo-qwen}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Working notes deriving the DPO objective from the RLHF objective, so the
+implementation that follows is grounded in the math rather than copied from a
+library. The throughline: \emph{the RLHF reward-maximization problem has a
+closed-form optimal policy, which lets us rewrite the reward in terms of the
+policy itself, which collapses the whole RL pipeline into a single
+classification-style loss on preference pairs.}
+\end{abstract}
+
+\tableofcontents
+
+% ============================================================
+\section{Setup and notation}
+% ============================================================
+
+We have a prompt $x$ and a response $y$. A policy $\pi(y \given x)$ is an
+autoregressive language model: a distribution over response sequences given a
+prompt.
+
+\begin{itemize}
+  \item $\piref(y \given x)$ — the \textbf{reference policy}: a frozen copy of the
+        model after supervised fine-tuning (SFT). It is our anchor.
+  \item $\pol(y \given x)$ — the \textbf{policy} we are optimizing, initialized
+        from $\piref$.
+  \item $\D = \{(x, \yw, \yl)\}$ — a preference dataset. For each prompt $x$, a
+        human (or model) judged response $\yw$ as preferred over $\yl$.
+  \item $r(x, y)$ — a (latent) scalar reward measuring how good $y$ is for $x$.
+  \item $\beta > 0$ — a temperature controlling how far $\pol$ may drift from
+        $\piref$.
+\end{itemize}
+
+% ============================================================
+\section{The RLHF objective}
+% ============================================================
+
+Classic RLHF maximizes expected reward while staying close to the reference
+policy via a KL penalty:
+\begin{equation}
+  \max_{\pol} \;
+  \E_{x \sim \D} \,
+  \E_{y \sim \pol(\cdot \given x)}
+  \Big[\, r(x, y) \,\Big]
+  \;-\;
+  \beta \, \KL\!\big( \pol(\cdot \given x) \,\Vert\, \piref(\cdot \given x) \big).
+  \label{eq:rlhf}
+\end{equation}
+
+The KL term is the regularizer: without it, the policy would collapse onto
+whatever response maximizes the (imperfect, learned) reward, exploiting its
+errors. $\beta$ sets the trust radius.
+
+% ============================================================
+\section{Closed-form optimal policy}
+% ============================================================
+
+\begin{proposition}[Optimal policy for the KL-regularized objective]
+For a fixed prompt $x$, the policy maximizing \eqref{eq:rlhf} is
+\begin{equation}
+  \polstar(y \given x)
+  = \frac{1}{Z(x)} \, \piref(y \given x) \,
+    \exp\!\Big( \tfrac{1}{\beta} \, r(x, y) \Big),
+  \qquad
+  Z(x) = \sum_{y} \piref(y \given x) \, \exp\!\Big( \tfrac{1}{\beta} r(x, y) \Big).
+  \label{eq:optpolicy}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Fix $x$ and write the per-prompt objective by expanding the KL:
+\[
+  J(\pi)
+  = \sum_{y} \pi(y \given x)\, r(x,y)
+  - \beta \sum_{y} \pi(y \given x) \log \frac{\pi(y \given x)}{\piref(y \given x)}.
+\]
+Divide by $\beta$ and flip the sign to turn it into a minimization:
+\[
+  \min_{\pi} \;
+  \sum_{y} \pi(y \given x)
+  \log \frac{\pi(y \given x)}{\piref(y \given x)}
+  - \frac{1}{\beta} \sum_{y} \pi(y \given x)\, r(x,y).
+\]
+Pull the reward into the log by defining the normalized target
+$\tfrac{1}{Z(x)}\piref(y\given x)\exp(r(x,y)/\beta)$ as in \eqref{eq:optpolicy}.
+Then the objective equals
+\[
+  \sum_y \pi(y\given x)
+  \log \frac{\pi(y \given x)}
+            {\tfrac{1}{Z(x)}\,\piref(y\given x)\exp(r(x,y)/\beta)}
+  \;-\; \log Z(x)
+  \;=\;
+  \KL\!\big(\pi \,\Vert\, \polstar\big) - \log Z(x).
+\]
+$Z(x)$ does not depend on $\pi$, and KL divergence is minimized (and equals $0$)
+exactly when its two arguments match. Hence $\pi = \polstar$, giving
+\eqref{eq:optpolicy}.
+\end{proof}
+
+\paragraph{Why this matters.} We now know the \emph{shape} of the optimal policy
+in closed form. The only obstacle to using it directly is $Z(x)$: summing over
+all possible responses $y$ is intractable. DPO's trick is to make $Z(x)$ cancel.
+
+% ============================================================
+\section{Reparameterizing the reward}
+% ============================================================
+
+Solve \eqref{eq:optpolicy} for the reward by taking logs and rearranging:
+\begin{equation}
+  r(x, y)
+  = \beta \log \frac{\polstar(y \given x)}{\piref(y \given x)}
+  + \beta \log Z(x).
+  \label{eq:reward-reparam}
+\end{equation}
+
+This is the key reparameterization: \emph{any} reward function can be expressed
+through its corresponding optimal policy. We do not need a separate reward
+network --- the policy \emph{is} an implicit reward model, up to the
+prompt-dependent constant $\beta \log Z(x)$.
+
+% ============================================================
+\section{Bradley--Terry preferences}
+% ============================================================
+
+The Bradley--Terry model says the probability that $\yw$ is preferred over $\yl$
+is a sigmoid of their reward difference:
+\begin{equation}
+  p(\yw \succ \yl \given x)
+  = \frac{\exp r(x, \yw)}{\exp r(x, \yw) + \exp r(x, \yl)}
+  = \sigmoid\!\big( r(x, \yw) - r(x, \yl) \big).
+  \label{eq:bt}
+\end{equation}
+
+Crucially this depends only on the reward \emph{difference}.
+
+% ============================================================
+\section{The DPO loss}
+% ============================================================
+
+Substitute the reparameterized reward \eqref{eq:reward-reparam} into the
+Bradley--Terry difference \eqref{eq:bt}. The intractable $\beta \log Z(x)$ term
+is identical for $\yw$ and $\yl$ (it depends only on $x$), so it cancels:
+\begin{align}
+  r(x, \yw) - r(x, \yl)
+  &= \beta \log \frac{\polstar(\yw \given x)}{\piref(\yw \given x)}
+   - \beta \log \frac{\polstar(\yl \given x)}{\piref(\yl \given x)}
+   + \underbrace{\beta \log Z(x) - \beta \log Z(x)}_{=\,0}.
+\end{align}
+
+Replacing the unknown optimum $\polstar$ with our trainable $\pol$ and fitting
+by maximum likelihood over the preference dataset gives the DPO loss:
+\begin{empheq}[box=\fbox]{equation}
+  \mathcal{L}_{\mathrm{DPO}}(\theta)
+  = - \, \E_{(x, \yw, \yl) \sim \D}
+  \left[
+    \log \sigmoid\!\left(
+      \beta \log \frac{\pol(\yw \given x)}{\piref(\yw \given x)}
+      - \beta \log \frac{\pol(\yl \given x)}{\piref(\yl \given x)}
+    \right)
+  \right].
+  \label{eq:dpo}
+\end{empheq}
+
+Define the per-response \emph{implicit reward} (the log-ratio, also called the
+log-probability margin against the reference):
+\[
+  \hat r_\theta(x, y) \coloneqq \beta \log \frac{\pol(y \given x)}{\piref(y \given x)}.
+\]
+Then $\mathcal{L}_{\mathrm{DPO}} = -\,\E\big[\log\sigmoid(\hat r_\theta(x,\yw) - \hat r_\theta(x,\yl))\big]$,
+which is just binary logistic regression on the reward margin.
+
+% ============================================================
+\section{Gradient and intuition}
+% ============================================================
+
+Let $u = \hat r_\theta(x, \yw) - \hat r_\theta(x, \yl)$ be the implicit reward
+margin. Using $\frac{d}{du}\log\sigmoid(u) = \sigmoid(-u)$, the gradient is
+\begin{equation}
+  \nabla_\theta \mathcal{L}_{\mathrm{DPO}}
+  = -\,\beta\, \E_{\D}\Big[
+      \underbrace{\sigmoid\big(-u\big)}_{\text{weight}}
+      \big(
+        \nabla_\theta \log \pol(\yw \given x)
+        - \nabla_\theta \log \pol(\yl \given x)
+      \big)
+    \Big].
+  \label{eq:grad}
+\end{equation}
+
+Reading \eqref{eq:grad}:
+\begin{itemize}
+  \item The update \textbf{increases} $\log \pol(\yw \given x)$ and
+        \textbf{decreases} $\log \pol(\yl \given x)$ --- push up the chosen,
+        push down the rejected.
+  \item The weight $\sigmoid(-u) = \sigmoid\big(\hat r_\theta(x,\yl) - \hat
+        r_\theta(x,\yw)\big)$ is large exactly when the model is \emph{wrong}
+        (ranks the rejected response higher) and small once it already ranks
+        the pair correctly. The model spends gradient where it is mistaken.
+  \item Everything is measured \emph{relative to $\piref$}: the log-ratios prevent
+        the policy from trivially inflating both probabilities, and $\beta$
+        scales how aggressively margins translate into updates.
+\end{itemize}
+
+% ============================================================
+\section{What this means for the implementation}
+% ============================================================
+
+To compute \eqref{eq:dpo} in code, per batch we need, for each of
+$\yw$ and $\yl$:
+\begin{enumerate}
+  \item $\log \pol(y \given x)$ --- sum of token log-probs under the trainable
+        policy (masking out the prompt tokens).
+  \item $\log \piref(y \given x)$ --- the same sum under the frozen reference (no
+        gradient).
+\end{enumerate}
+Form the two log-ratios, scale by $\beta$, take the difference, push through
+$-\log\sigmoid$, and average. That single scalar is the loss --- no reward
+model, no sampling, no RL loop.
+
+\end{document}
